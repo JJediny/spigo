@@ -1,26 +1,28 @@
-// package flow processes gotocol context information to collect and export request flows across the system
+// Package flow processes gotocol context information to collect and export request flows across the system
 package flow
 
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/adrianco/spigo/tooling/archaius"
-	"github.com/adrianco/spigo/tooling/collect"
-	"github.com/adrianco/spigo/tooling/dhcp"
-	"github.com/adrianco/spigo/tooling/gotocol"
-	"github.com/adrianco/spigo/tooling/graphneo4j"
-	"github.com/go-kit/kit/metrics"
 	"log"
 	"os"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/adrianco/spigo/tooling/archaius"
+	"github.com/adrianco/spigo/tooling/collect"
+	"github.com/adrianco/spigo/tooling/dhcp"
+	"github.com/adrianco/spigo/tooling/gotocol"
+	"github.com/adrianco/spigo/tooling/graphneo4j"
+	"github.com/go-kit/kit/metrics/generic"
 )
 
-// value for zipkin span direction
+// Values for zipkin span direction
 type Values int
 
+// Zipkin annotation tags
 const (
 	CS      Values = iota // client send
 	SR                    // server receive
@@ -58,7 +60,7 @@ type spannotype struct {
 	Value     string `json:"value"`      // direction of span
 }
 
-// sortable spans
+// ByCtx sortable spans
 type ByCtx []*spannotype
 
 func (a ByCtx) Len() int             { return len(a) }
@@ -66,9 +68,8 @@ func (a ByCtx) Swap(i, j int)        { a[i], a[j] = a[j], a[i] }
 func (a ByCtx) Less(i, j int) bool { // sort by span first then time
 	if a[i].Ctx == a[j].Ctx {
 		return a[i].Timestamp < a[j].Timestamp
-	} else {
-		return a[i].Ctx < a[j].Ctx
 	}
+	return a[i].Ctx < a[j].Ctx
 }
 
 var flowmap flowmaptype
@@ -77,6 +78,8 @@ var flowlock sync.Mutex // lock changes to the maps
 
 // file to log flow data to
 var file *os.File
+
+var collector *KafkaCollector
 
 // Common Annotation code
 func annotate(msg gotocol.Message, name string, t time.Time, resp, others Values) *spannotype {
@@ -101,7 +104,7 @@ func annotate(msg gotocol.Message, name string, t time.Time, resp, others Values
 	return annotation
 }
 
-// Annotate service activity when receiving a message
+// AnnotateReceive service activity when receiving a message
 func AnnotateReceive(msg gotocol.Message, name string, received time.Time) {
 	if !archaius.Conf.Collect {
 		return
@@ -118,7 +121,7 @@ func AnnotateReceive(msg gotocol.Message, name string, received time.Time) {
 	return
 }
 
-// Annotate service sends on a flow
+// AnnotateSend service sends on a flow
 func AnnotateSend(msg gotocol.Message, name string) {
 	if !archaius.Conf.Collect {
 		return
@@ -129,8 +132,8 @@ func AnnotateSend(msg gotocol.Message, name string) {
 	return
 }
 
-// Terminate a flow, flushing output and freeing the request id to keep the map smaller
-func End(msg gotocol.Message, resphist, servhist, rthist metrics.Histogram) {
+// End a flow, flushing output and freeing the request id to keep the map smaller
+func End(msg gotocol.Message, resphist, servhist, rthist *generic.Histogram) {
 	if !archaius.Conf.Collect {
 		return
 	}
@@ -166,6 +169,19 @@ func Shutdown() {
 	if !archaius.Conf.Collect {
 		return
 	}
+
+	// Try to add Kafka collector if configured to do so
+	if len(archaius.Conf.Kafka) > 0 {
+		log.Printf("Flushing flows to Kafka Collector %#v\n", archaius.Conf.Kafka)
+		var err error
+		collector, err = NewKafkaCollector(archaius.Conf.Kafka)
+		if err != nil {
+			log.Printf("Unable to start Kafka Collector: %#v\n", err)
+		} else {
+			defer collector.Close()
+		}
+	}
+
 	flowlock.Lock()
 	defer flowlock.Unlock()
 	f, err := os.Create("json_metrics/" + archaius.Conf.Arch + "_flow.json")
@@ -185,7 +201,7 @@ func Shutdown() {
 		}
 		Flush(c, f)
 	}
-	file.WriteString("]\n")
+	file.WriteString("\n]\n")
 	file.Close()
 }
 
@@ -255,12 +271,16 @@ type zipkinspan struct {
 	Annotations []zipkinannotation `json:"annotations"`
 }
 
+// WriteZip stores zipkin as json
 func WriteZip(zip zipkinspan) {
-	j, err := json.Marshal(zip)
+	j, err := json.Marshal([]*zipkinspan{&zip})
 	if err != nil {
 		log.Fatal(err)
 	}
-	file.WriteString(fmt.Sprintf("%v\n", string(j)))
+	if collector != nil {
+		collector.Collect(j)
+	}
+	file.Write(j[1 : len(j)-1])
 }
 
 // Flush the spans for a request in zipkin format
@@ -274,7 +294,7 @@ func Flush(t gotocol.TraceContextType, trace []*spannotype) {
 		if ctx != a.Ctx { // new span
 			if ctx != "" { // not the first
 				WriteZip(zip)
-				file.WriteString(",")
+				file.WriteString(",\n")
 				zip.Annotations = nil
 			}
 			n++
@@ -299,8 +319,8 @@ func Flush(t gotocol.TraceContextType, trace []*spannotype) {
 	WriteZip(zip)
 }
 
-// common code for instrumenting requests
-func Instrument(msg gotocol.Message, name string, hist metrics.Histogram) {
+// Instrument common code for requests
+func Instrument(msg gotocol.Message, name string, hist *generic.Histogram) {
 	received := time.Now()
 	collect.Measure(hist, received.Sub(msg.Sent))
 	if archaius.Conf.Msglog {

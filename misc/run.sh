@@ -16,13 +16,14 @@
 ./spigo -a container -j -d 4 -s 1
 ./spigo -a container -j -d 4 -s 2 -p 200
 ./spigo -a container -j -d 4 -s 3 -p 150 -w 2
+./spigo -a edge -d 2 -j
 ./spigo -a fsm -d 10 -j -w 2
 ./spigo -a fsm -d 30 -j -p 100 -s 1
 ./spigo -a fsm -d 10 -j -p 200 -s 2
 ./spigo -a fsm -d 10 -j -p 300 -s 3
 ./spigo -a fsm -d 10 -j -p 400 -s 4
 ./spigo -a fsm -d 10 -j -p 500 -s 5
-./spigo -a lamp -d 2 -j
+./spigo -d 10 -a lamp -j
 ./spigo -a lamp -d 1 -j -s 1
 ./spigo -a lamp -d 5 -j -p 200 -s 2
 ./spigo -a lamp -d 5 -j -p 300 -s 3
@@ -52,7 +53,7 @@
 ./spigo -a netflix -d 3 -j -p 200 -s 7 -w 6 -f
 ./spigo -a netflix -d 10 -j -p 300 -s 8 -w 6
 ./spigo -a netflix -d 60 -j -p 400 -s 9 -w 6 -u=10s
-./spigo -a netflixoss -d 2 -j
+./spigo -d 2 -j -a netflixoss
 ./spigo -a netflixoss -d 5 -j -p 200 -s 1
 ./spigo -a netflixoss -d 5 -j -p 100 -s 2 -w 2
 ./spigo -a netflixoss -d 5 -j -p 100 -s 3 -w 3
